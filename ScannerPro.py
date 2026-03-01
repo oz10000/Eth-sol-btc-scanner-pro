@@ -13,18 +13,18 @@ warnings.filterwarnings('ignore')
 # ============================================================
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h"]
-LOOKBACK_DAYS = 60
-SCAN_LOOKBACK = 30
+LOOKBACK_DAYS = 30          # Reducido a 30 días para asegurar datos en spot
+SCAN_LOOKBACK = 20           # Reducido para el escaneo
 MC_ITER = 200
 DATA_CACHE = {}
 ATR_CACHE = {}
 PIDELTA_CACHE = {}
 
 # Parámetros del escáner (ajustados para generar señales)
-TENSION_QUANTILE_SCAN = 0.5          # Reducido de 0.85 para capturar más puntos
+TENSION_QUANTILE_SCAN = 0.5
 MIN_WINRATE = 0.55
 SCAN_K_VALUES = [3, 5, 8, 13]
-MIN_FUTURE_VELAS = 20                 # Reducido de 50 para requerir menos velas hacia adelante
+MIN_FUTURE_VELAS = 20
 
 # Grid de optimización
 PARAM_GRID = {
@@ -35,8 +35,13 @@ PARAM_GRID = {
     'pidelta_window': [5, 8, 13, 21]
 }
 
+# Headers para simular un navegador
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
 # ============================================================
-# DESCARGA DE DATOS
+# DESCARGA DE DATOS (Spot API)
 # ============================================================
 def fetch_klines(symbol, interval, days=LOOKBACK_DAYS):
     key = f"{symbol}_{interval}"
@@ -45,11 +50,26 @@ def fetch_klines(symbol, interval, days=LOOKBACK_DAYS):
 
     end = int(time.time() * 1000)
     start = end - days * 24 * 60 * 60 * 1000
-    url = "https://fapi.binance.com/fapi/v1/klines"
-    params = {"symbol": symbol, "interval": interval, "startTime": start, "endTime": end, "limit": 1500}
+    # Usamos el endpoint SPOT en lugar de FUTUROS
+    url = "https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "startTime": start,
+        "endTime": end,
+        "limit": 1500
+    }
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        if r.status_code != 200:
+            print(f"   ❌ Error {r.status_code} al descargar {symbol} {interval}: {r.text[:100]}")
+            sys.stdout.flush()
+            return None
         data = r.json()
+        if not isinstance(data, list):
+            print(f"   ❌ Respuesta inesperada {symbol} {interval}: {type(data)}")
+            sys.stdout.flush()
+            return None
         df = pd.DataFrame(data, columns=[
             "open_time","open","high","low","close","volume",
             "close_time","quote_vol","num_trades","taker_base_vol","taker_quote_vol","ignore"
@@ -62,8 +82,12 @@ def fetch_klines(symbol, interval, days=LOOKBACK_DAYS):
         print(f"   📥 {symbol} {interval}: {len(df)} velas descargadas")
         sys.stdout.flush()
         return df
+    except requests.exceptions.RequestException as e:
+        print(f"   ❌ Error de conexión {symbol} {interval}: {e}")
+        sys.stdout.flush()
+        return None
     except Exception as e:
-        print(f"   ❌ Error descargando {symbol} {interval}: {e}")
+        print(f"   ❌ Error inesperado {symbol} {interval}: {e}")
         sys.stdout.flush()
         return None
 
