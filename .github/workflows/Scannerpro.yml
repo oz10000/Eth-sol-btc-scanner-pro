@@ -3,7 +3,7 @@ name: Ejecutar ScannerPro
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'  # Cada 6 horas (opcional)
+    - cron: '0 */6 * * *'   # Cada 6 horas (opcional)
 
 jobs:
   run-scanner:
@@ -30,6 +30,7 @@ jobs:
     - name: Subir artifacts TXT
       uses: actions/upload-artifact@v4
       with:
-        name: ScannerPro-TXT
+        name: ScannerPro-Resultados
         path: |
-          escaneo_filtrado.txt
+          escaneo_completo.txt
+          escaneo_*.txt   # Opcional: todos los archivos por timeframe
