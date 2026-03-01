@@ -1,7 +1,7 @@
 name: Ejecutar ScannerPro
 
 on:
-  workflow_dispatch: # Permite ejecutar manualmente desde Actions
+  workflow_dispatch:
 
 jobs:
   run-scanner:
