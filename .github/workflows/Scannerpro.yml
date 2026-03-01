@@ -6,28 +6,29 @@ on:
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 📥 Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: ⚡ Setup Python
+      - name: Configurar Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
-      - name: 🐍 Install dependencies
+      - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy requests
 
-      - name: ▶️ Run ScannerPro
+      - name: Ejecutar ScannerPro
         run: |
           python ScannerPro.py
 
-      - name: 📦 Upload artifacts
+      - name: Subir artefactos TXT
         uses: actions/upload-artifact@v4
         with:
           name: scanner-results
           path: |
-            escaneo_filtrado.csv
-            optimization_results.csv
+            escaneo_filtrado.txt
+            optimization_results.txt
