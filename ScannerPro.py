@@ -16,9 +16,9 @@ SYMBOLS = {
     'bitcoin': 'BTC',
     'ethereum': 'ETH',
     'solana': 'SOL'
-}  # CoinGecko ID -> símbolo para mostrar
+}
 
-CRYPTOCOM_SYMBOLS = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT']  # Formato Crypto.com
+CRYPTOCOM_SYMBOLS = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT']
 
 TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h"]
 LOOKBACK_DAYS = 30
@@ -31,7 +31,7 @@ TENSION_QUANTILE_SCAN = 0.5
 SCAN_K_VALUES = [3, 5, 8, 13]
 MIN_FUTURE_VELAS = 20
 
-# Grid de optimización (se mantiene igual)
+# Grid de optimización
 PARAM_GRID = {
     'tp_atr': [1, 2, 3, 5, 8],
     'sl_atr': [1, 2, 3, 5],
@@ -40,163 +40,110 @@ PARAM_GRID = {
     'pidelta_window': [5, 8, 13, 21]
 }
 
-# Headers para simular navegador
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-}
+# Parámetros por defecto para backtest de señales top
+DEFAULT_TP_ATR = 3
+DEFAULT_SL_ATR = 2
+DEFAULT_ATR_WINDOW = 14
+
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
 # ============================================================
-# FUNCIONES DE DESCARGA (CoinGecko)
+# FUNCIONES DE DESCARGA (CoinGecko + Crypto.com)
 # ============================================================
 def fetch_ohlc_coingecko(coin_id, vs_currency='usd', days=LOOKBACK_DAYS):
-    """
-    Descarga datos OHLC de CoinGecko.
-    Endpoint: /coins/{id}/ohlc
-    """
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {
-        'vs_currency': vs_currency,
-        'days': days
-    }
+    params = {'vs_currency': vs_currency, 'days': days}
     try:
         r = requests.get(url, params=params, headers=HEADERS, timeout=15)
         if r.status_code != 200:
-            print(f"   ❌ CoinGecko {coin_id}: error {r.status_code}")
             return None
         data = r.json()
-        # data es lista de [timestamp, open, high, low, close]
         df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
-        df['volume'] = 0  # CoinGecko OHLC no incluye volumen
-        print(f"   📥 CoinGecko {coin_id}: {len(df)} velas OHLC")
+        df['volume'] = 0
         return df
-    except Exception as e:
-        print(f"   ❌ Error CoinGecko {coin_id}: {e}")
+    except:
         return None
 
 def fetch_market_chart_coingecko(coin_id, vs_currency='usd', days=LOOKBACK_DAYS):
-    """
-    Descarga datos de precio, volumen y market cap (más completo).
-    Útil para calcular indicadores como ATR.
-    """
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-    params = {
-        'vs_currency': vs_currency,
-        'days': days
-    }
+    params = {'vs_currency': vs_currency, 'days': days}
     try:
         r = requests.get(url, params=params, headers=HEADERS, timeout=15)
         if r.status_code != 200:
             return None
         data = r.json()
-        # data tiene 'prices', 'market_caps', 'total_volumes'
         prices = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
         volumes = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
         df = prices.merge(volumes, on='timestamp')
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
-        # Necesitamos high/low aproximados (usaremos precio como close)
+        # Aproximar high/low como el precio (no ideal)
         df['high'] = df['price']
         df['low'] = df['price']
         df['open'] = df['price'].shift(1).fillna(df['price'])
         df['close'] = df['price']
-        print(f"   📥 CoinGecko {coin_id}: {len(df)} velas market_chart")
         return df
-    except Exception as e:
-        print(f"   ❌ Error CoinGecko market_chart {coin_id}: {e}")
+    except:
         return None
 
-# ============================================================
-# FUNCIONES DE DESCARGA (Crypto.com)
-# ============================================================
-def fetch_candles_cryptocom(instrument_name, timeframe='1m', limit=300):
-    """
-    Descarga velas de Crypto.com (endpoint público).
-    timeframe: 1m, 5m, 15m, 30m, 1h, 4h, 1d, etc.
-    """
-    # Mapeo de timeframes al formato de Crypto.com
-    tf_map = {
-        '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-        '1h': '1h', '4h': '4h', '1d': '1d'
-    }
+def fetch_candles_cryptocom(instrument_name, timeframe='1m', limit=500):
+    tf_map = {'1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h'}
     interval = tf_map.get(timeframe, '1h')
     url = "https://api.crypto.com/exchange/v1/public/get-candlestick"
-    params = {
-        'instrument_name': instrument_name,
-        'timeframe': interval
-    }
+    params = {'instrument_name': instrument_name, 'timeframe': interval}
     try:
         r = requests.get(url, params=params, headers=HEADERS, timeout=15)
         if r.status_code != 200:
-            print(f"   ❌ Crypto.com {instrument_name}: error {r.status_code}")
             return None
         data = r.json()
         if data['code'] != 0:
-            print(f"   ❌ Crypto.com error: {data.get('message', '')}")
             return None
-        # La respuesta tiene 'data' con lista de velas
         candles = data['result']['data']
         df = pd.DataFrame(candles)
-        # Convertir tipos
-        for col in ['t', 'o', 'h', 'l', 'c', 'v']:
+        for col in ['t','o','h','l','c','v']:
             df[col] = pd.to_numeric(df[col])
         df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
         df.set_index('timestamp', inplace=True)
-        df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
-        df = df[['open', 'high', 'low', 'close', 'volume']].sort_index()
-        print(f"   📥 Crypto.com {instrument_name} {timeframe}: {len(df)} velas")
+        df = df.rename(columns={'o':'open','h':'high','l':'low','c':'close','v':'volume'})
+        df = df[['open','high','low','close','volume']].sort_index()
         return df
-    except Exception as e:
-        print(f"   ❌ Error Crypto.com {instrument_name}: {e}")
+    except:
         return None
 
-# ============================================================
-# FUNCIÓN PRINCIPAL DE DESCARGA (con caché y failover)
-# ============================================================
 def fetch_klines(symbol, tf):
-    """
-    Intenta primero con CoinGecko, si falla usa Crypto.com.
-    symbol: puede ser 'bitcoin', 'ethereum', 'solana' o 'BTC_USDT', etc.
-    """
     key = f"{symbol}_{tf}"
     if key in DATA_CACHE:
         return DATA_CACHE[key]
 
     df = None
-    # Si es un ID de CoinGecko
-    if symbol in SYMBOLS:
-        # Primero intentamos con market_chart (más datos)
-        df = fetch_market_chart_coingecko(symbol, days=SCAN_LOOKBACK)
-        if df is not None and len(df) > 100:
-            # Remuestrear al timeframe deseado (CoinGecko devuelve datos diarios o por hora según days)
-            # Para simplificar, usamos los datos tal cual, pero en producción deberías remuestrear.
-            # Como es un escáner simple, dejamos así.
-            DATA_CACHE[key] = df
-            return df
-        # Si falla, intentamos con OHLC
-        df = fetch_ohlc_coingecko(symbol, days=SCAN_LOOKBACK)
-        if df is not None and len(df) > 50:
-            DATA_CACHE[key] = df
-            return df
-
-    # Si no funcionó CoinGecko, probamos con Crypto.com
-    # Convertir symbol a formato Crypto.com
+    # Priorizar Crypto.com (datos OHLC reales)
     if symbol in SYMBOLS:
         cryptocom_sym = f"{SYMBOLS[symbol]}_USDT"
     else:
-        cryptocom_sym = symbol  # asumimos que ya viene en formato correcto
+        cryptocom_sym = symbol
 
     df = fetch_candles_cryptocom(cryptocom_sym, tf, limit=500)
     if df is not None and len(df) > 50:
         DATA_CACHE[key] = df
         return df
 
-    print(f"   ⚠️ No se pudieron obtener datos para {symbol} {tf}")
+    # Si falla, usar CoinGecko (aproximado)
+    if symbol in SYMBOLS:
+        df = fetch_market_chart_coingecko(symbol, days=SCAN_LOOKBACK)
+        if df is not None and len(df) > 50:
+            DATA_CACHE[key] = df
+            return df
+        df = fetch_ohlc_coingecko(symbol, days=SCAN_LOOKBACK)
+        if df is not None and len(df) > 50:
+            DATA_CACHE[key] = df
+            return df
+
     return None
 
 # ============================================================
-# CÁLCULO DE INDICADORES (adaptados para usar con los datos disponibles)
+# INDICADORES
 # ============================================================
 def get_atr(symbol, tf, window):
     df = fetch_klines(symbol, tf)
@@ -212,17 +159,6 @@ def get_atr(symbol, tf, window):
     atr = tr.rolling(window).mean()
     return atr
 
-def get_pidelta(symbol, tf, window):
-    df = fetch_klines(symbol, tf)
-    if df is None or len(df) < window + 10:
-        return None
-    price = df['close']
-    rets = price.pct_change().fillna(0)
-    P_struct = rets.rolling(window).mean()
-    P_hist = rets.ewm(span=window).mean()
-    pidelta = P_struct - P_hist
-    return pidelta
-
 def tension_235(series):
     ema2 = series.ewm(span=2).mean()
     ema3 = series.ewm(span=3).mean()
@@ -235,14 +171,12 @@ def tension_235(series):
 def scan_symbol_tf(symbol_id, symbol_display, tf):
     df = fetch_klines(symbol_id, tf)
     if df is None or len(df) < 100:
-        print(f"   ⚠️ {symbol_display} {tf}: datos insuficientes")
         return []
 
     price = df['close']
     tension = tension_235(price)
     threshold = tension.quantile(TENSION_QUANTILE_SCAN)
     high_tension_points = tension[tension >= threshold].index
-    print(f"   📊 {symbol_display} {tf}: umbral={threshold:.6f}, puntos={len(high_tension_points)}")
 
     signals = []
     for dt in high_tension_points:
@@ -266,7 +200,9 @@ def scan_symbol_tf(symbol_id, symbol_display, tf):
                     'edge': future_ret / price.iloc[idx],
                     'winrate': 1.0,
                     'k': k,
-                    'score': future_ret
+                    'score': future_ret,
+                    'entry_price': price.iloc[idx],
+                    'future_price_k': price.iloc[idx + k]
                 })
             elif future_ret < 0:
                 signals.append({
@@ -278,14 +214,14 @@ def scan_symbol_tf(symbol_id, symbol_display, tf):
                     'edge': -future_ret / price.iloc[idx],
                     'winrate': 1.0,
                     'k': k,
-                    'score': -future_ret
+                    'score': -future_ret,
+                    'entry_price': price.iloc[idx],
+                    'future_price_k': price.iloc[idx + k]
                 })
-    print(f"   ✅ {symbol_display} {tf}: {len(signals)} señales")
     return signals
 
 def run_scanner():
     all_signals = []
-    # Escaneamos usando los IDs de CoinGecko
     for coin_id, display in SYMBOLS.items():
         for tf in TIMEFRAMES:
             print(f"🔍 Escaneando {display} {tf}...")
@@ -293,7 +229,6 @@ def run_scanner():
             sigs = scan_symbol_tf(coin_id, display, tf)
             all_signals.extend(sigs)
 
-    # También escaneamos con Crypto.com directamente para tener más cobertura
     for sym in CRYPTOCOM_SYMBOLS:
         for tf in TIMEFRAMES:
             print(f"🔍 Escaneando {sym} {tf}...")
@@ -308,13 +243,13 @@ def run_scanner():
         print(f"✅ Escáner completado. {len(df_signals)} señales guardadas.")
     else:
         print("⚠️ No se generaron señales. Creando archivo vacío.")
-        pd.DataFrame(columns=['Symbol','TF','open_time','Direction','tension','edge','winrate','k','score'])\
+        pd.DataFrame(columns=['Symbol','TF','open_time','Direction','tension','edge','winrate','k','score','entry_price','future_price_k'])\
           .to_csv("escaneo_filtrado.txt", index=False, sep='\t')
     sys.stdout.flush()
     return df_signals
 
 # ============================================================
-# BACKTEST DE UNA SEÑAL (adaptado)
+# BACKTEST DE UNA SEÑAL (con stops basados en ATR)
 # ============================================================
 def backtest_signal(symbol, tf, signal_time, direction, tp_atr, sl_atr, atr_window, max_lookahead=30):
     df = fetch_klines(symbol, tf)
@@ -363,10 +298,10 @@ def backtest_signal(symbol, tf, signal_time, direction, tp_atr, sl_atr, atr_wind
     return {'exit_type': 'NONE', 'bars': max_lookahead, 'return': ret}
 
 # ============================================================
-# MÉTRICAS DE PORTAFOLIO (sin cambios)
+# MÉTRICAS DE PORTAFOLIO
 # ============================================================
 def portfolio_metrics(trades, daily_corr):
-    if len(trades) < 3:
+    if len(trades) < 1:  # Cambiado de 3 a 1 para permitir resultados
         return None, None, None, None, -np.inf
     df_trades = pd.DataFrame(trades)
     df_trades['exit_time'] = pd.to_datetime(df_trades['exit_time'])
@@ -393,11 +328,10 @@ def portfolio_metrics(trades, daily_corr):
     return total_return, sharpe, max_dd, z_score, score
 
 def get_daily_correlation(symbols):
-    # Versión simplificada
-    return 0.5
+    return 0.5  # Simplificado
 
 # ============================================================
-# OPTIMIZACIÓN DE PARÁMETROS (sin cambios, excepto uso de daily_corr fijo)
+# OPTIMIZACIÓN DE PARÁMETROS (con mínimo de trades = 1)
 # ============================================================
 def optimize_parameters(signals_df):
     if signals_df.empty:
@@ -406,7 +340,7 @@ def optimize_parameters(signals_df):
           .to_csv("optimization_results.txt", index=False, sep='\t')
         return None
 
-    time_col = 'open_time' if 'open_time' in signals_df.columns else signals_df.columns[0]
+    time_col = 'open_time'
     signals_df[time_col] = pd.to_datetime(signals_df[time_col])
     if 'tension' not in signals_df.columns:
         signals_df['tension'] = 1.0
@@ -419,7 +353,7 @@ def optimize_parameters(signals_df):
     param_values = list(PARAM_GRID.values())
     combinations = list(product(*param_values))
     total = len(combinations)
-    print(f"🔍 Evaluando {total} combinaciones...")
+    print(f"🔍 Evaluando {total} combinaciones (mínimo 1 trade)...")
 
     for idx, combo in enumerate(combinations):
         params = dict(zip(param_names, combo))
@@ -432,16 +366,14 @@ def optimize_parameters(signals_df):
 
         trades = []
         for _, sig in filtered.iterrows():
-            # Determinar qué símbolo usar para fetch_klines
-            # Si es de CoinGecko, buscar el ID correspondiente
+            # Determinar símbolo para fetch
             symbol_key = None
             for coin_id, display in SYMBOLS.items():
                 if display == sig['Symbol']:
                     symbol_key = coin_id
                     break
             if symbol_key is None:
-                # Asumir que es formato Crypto.com
-                symbol_key = f"{sig['Symbol']}_USDT" if '_' not in sig['Symbol'] else sig['Symbol']
+                symbol_key = sig['Symbol'] if '_' in sig['Symbol'] else f"{sig['Symbol']}_USDT"
 
             res = backtest_signal(
                 symbol=symbol_key,
@@ -455,7 +387,7 @@ def optimize_parameters(signals_df):
             if res:
                 trades.append({
                     'return': res['return'],
-                    'exit_time': sig[time_col] + timedelta(minutes=res['bars'] * 5),  # aproximación
+                    'exit_time': sig[time_col] + timedelta(minutes=res['bars'] * 5),
                     'symbol': sig['Symbol'],
                     'direction': sig['Direction'],
                     'exit_type': res['exit_type']
@@ -463,8 +395,8 @@ def optimize_parameters(signals_df):
 
         n_trades = len(trades)
         if idx % 100 == 0:
-            print(f"   Progreso: {idx}/{total} - Última: {params} -> trades={n_trades}")
-        if n_trades < 3:
+            print(f"   Progreso: {idx}/{total} - {params} -> trades={n_trades}")
+        if n_trades < 1:  # Permitimos al menos 1 trade
             continue
 
         total_ret, sharpe, mdd, z, score = portfolio_metrics(trades, daily_corr)
@@ -491,7 +423,55 @@ def optimize_parameters(signals_df):
     return best
 
 # ============================================================
-# TOP SEÑALES (sin cambios)
+# BACKTEST DE SEÑALES TOP (con parámetros fijos)
+# ============================================================
+def backtest_top_signals(signals_df, top_n=3):
+    if signals_df.empty:
+        print("No hay señales para backtest.")
+        return
+
+    long_signals = signals_df[signals_df['Direction'] == 'LONG'].sort_values('score', ascending=False).head(top_n)
+    short_signals = signals_df[signals_df['Direction'] == 'SHORT'].sort_values('score', ascending=False).head(top_n)
+    top_signals = pd.concat([long_signals, short_signals])
+
+    print("\n📈 BACKTEST DE SEÑALES TOP (con parámetros por defecto TP={} SL={} ATR={})".format(
+        DEFAULT_TP_ATR, DEFAULT_SL_ATR, DEFAULT_ATR_WINDOW))
+    print("-" * 80)
+
+    for _, sig in top_signals.iterrows():
+        # Determinar símbolo
+        symbol_key = None
+        for coin_id, display in SYMBOLS.items():
+            if display == sig['Symbol']:
+                symbol_key = coin_id
+                break
+        if symbol_key is None:
+            symbol_key = sig['Symbol'] if '_' in sig['Symbol'] else f"{sig['Symbol']}_USDT"
+
+        res = backtest_signal(
+            symbol=symbol_key,
+            tf=sig['TF'],
+            signal_time=sig['open_time'],
+            direction=sig['Direction'],
+            tp_atr=DEFAULT_TP_ATR,
+            sl_atr=DEFAULT_SL_ATR,
+            atr_window=DEFAULT_ATR_WINDOW
+        )
+
+        if res:
+            print(f"{sig['Symbol']} {sig['TF']} {sig['Direction']} | "
+                  f"Entrada: {sig['entry_price']:.2f} | "
+                  f"Salida: {res['exit_type']} en {res['bars']} velas | "
+                  f"Retorno: {res['return']*100:.2f}%")
+        else:
+            print(f"{sig['Symbol']} {sig['TF']} {sig['Direction']} | "
+                  f"Entrada: {sig['entry_price']:.2f} | "
+                  f"Backtest no disponible (datos insuficientes)")
+
+    print("-" * 80)
+
+# ============================================================
+# TOP SEÑALES (solo información)
 # ============================================================
 def analyze_top_signals(signals_df, best_params):
     if signals_df.empty:
@@ -501,9 +481,11 @@ def analyze_top_signals(signals_df, best_params):
     short_signals = signals_df[signals_df['Direction'] == 'SHORT'].sort_values('score', ascending=False).head(3)
     top_signals = pd.concat([long_signals, short_signals])
 
-    print("\n📊 TOP 3 SEÑALES LONG Y TOP 3 SHORT")
+    print("\n📊 TOP 3 SEÑALES LONG Y TOP 3 SHORT (según score del escáner)")
     for _, sig in top_signals.iterrows():
-        print(f"{sig['Symbol']} {sig['TF']} {sig['Direction']} | Score: {sig['score']:.6f} | Tensión: {sig['tension']:.4f}")
+        print(f"{sig['Symbol']} {sig['TF']} {sig['Direction']} | "
+              f"Score: {sig['score']:.2f} | Tensión: {sig['tension']:.2f} | "
+              f"Entrada: {sig['entry_price']:.2f}")
 
 # ============================================================
 # MAIN
@@ -514,7 +496,10 @@ if __name__ == "__main__":
     signals = run_scanner()
     best_params = optimize_parameters(signals)
     if best_params is None and not signals.empty:
-        best_params = {'tp_atr': 3, 'sl_atr': 2, 'atr_window': 14, 'pidelta_window': 13, 'tension_quantile': 0.8}
+        best_params = {'tp_atr': DEFAULT_TP_ATR, 'sl_atr': DEFAULT_SL_ATR,
+                       'atr_window': DEFAULT_ATR_WINDOW, 'pidelta_window': 13,
+                       'tension_quantile': 0.8}
     analyze_top_signals(signals, best_params if best_params else {})
+    backtest_top_signals(signals, top_n=3)  # Nuevo backtest
     print("\n✅ Proceso completado. Archivos: 'escaneo_filtrado.txt', 'optimization_results.txt'")
     sys.stdout.flush()
