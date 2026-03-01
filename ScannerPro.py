@@ -12,9 +12,9 @@ warnings.filterwarnings('ignore')
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
-EXCHANGE = "multi"  # Usamos múltiples fuentes
-TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "8h", "12h", "1d"]
-LOOKBACK_CANDLES = 300   # Número de velas a descargar (ajustable según API)
+EXCHANGE = "multi"
+TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "8h", "12h", "1d"]
+LOOKBACK_CANDLES = 300
 TP_PCT = 0.02
 SL_PCT = 0.01
 
@@ -24,14 +24,17 @@ BASE_SYMBOLS = ["BTC", "ETH", "SOL"]
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 DATA_CACHE = {}
 
+# Mapeo de categorías por timeframe
+CATEGORY_MAP = {
+    '1m': 'Scalp', '3m': 'Scalp', '5m': 'Scalp', '15m': 'Scalp',
+    '30m': 'Intraday', '1h': 'Intraday', '4h': 'Intraday',
+    '8h': 'Swing', '12h': 'Swing', '1d': 'Swing'
+}
+
 # ============================================================
-# FUNCIONES DE DESCARDA (KuCoin)
+# FUNCIONES DE DESCARGA (KuCoin, Crypto.com, CoinGecko)
 # ============================================================
 def fetch_klines_kucoin(symbol, timeframe, limit=500):
-    """
-    symbol: ejemplo 'BTC-USDT' (con guión)
-    timeframe: 1min, 3min, 5min, 15min, 30min, 1hour, 2hour, 4hour, 6hour, 8hour, 12hour, 1day, 1week
-    """
     tf_map = {
         '1m': '1min', '3m': '3min', '5m': '5min', '15m': '15min', '30m': '30min',
         '1h': '1hour', '2h': '2hour', '4h': '4hour', '6h': '6hour', '8h': '8hour',
@@ -41,11 +44,7 @@ def fetch_klines_kucoin(symbol, timeframe, limit=500):
     if not interval:
         return None
     url = "https://api.kucoin.com/api/v1/market/candles"
-    params = {
-        'symbol': symbol,
-        'type': interval,
-        'limit': limit
-    }
+    params = {'symbol': symbol, 'type': interval, 'limit': limit}
     try:
         r = requests.get(url, params=params, headers=HEADERS, timeout=15)
         if r.status_code != 200:
@@ -54,7 +53,6 @@ def fetch_klines_kucoin(symbol, timeframe, limit=500):
         if data['code'] != '200000':
             return None
         candles = data['data']
-        # KuCoin devuelve [time, open, close, high, low, volume, turnover]
         df = pd.DataFrame(candles, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'turnover'])
         df['timestamp'] = pd.to_datetime(df['timestamp'].astype(float), unit='s')
         df.set_index('timestamp', inplace=True)
@@ -67,9 +65,6 @@ def fetch_klines_kucoin(symbol, timeframe, limit=500):
         print(f"   ⚠️ KuCoin error {symbol}: {e}")
         return None
 
-# ============================================================
-# FUNCIONES DE DESCARGA (Crypto.com)
-# ============================================================
 def fetch_klines_cryptocom(symbol, timeframe, limit=500):
     tf_map = {
         '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
@@ -94,25 +89,17 @@ def fetch_klines_cryptocom(symbol, timeframe, limit=500):
             df[col] = pd.to_numeric(df[col])
         df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
         df.set_index('timestamp', inplace=True)
-        df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
-        df = df[['open', 'high', 'low', 'close', 'volume']].sort_index()
+        df = df.rename(columns={'o':'open','h':'high','l':'low','c':'close','v':'volume'})
+        df = df[['open','high','low','close','volume']].sort_index()
         print(f"   📥 Crypto.com {symbol} {timeframe}: {len(df)} velas")
         return df
     except Exception as e:
         print(f"   ⚠️ Crypto.com error {symbol}: {e}")
         return None
 
-# ============================================================
-# FUNCIONES DE DESCARGA (CoinGecko - último recurso)
-# ============================================================
 def fetch_klines_coingecko(coin_id, timeframe, days=90):
-    """
-    CoinGecko solo devuelve datos OHLC diarios o por hora según 'days'.
-    Para timeframes intradía no es ideal, pero lo usamos como fallback.
-    """
-    # Mapeo aproximado: si timeframe es <=1h, pedimos datos con granularidad horaria.
     if timeframe in ['1m','5m','15m','30m','1h']:
-        days = 2  # pocos días para no exceder límite
+        days = 2
     else:
         days = 30
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
@@ -132,30 +119,17 @@ def fetch_klines_coingecko(coin_id, timeframe, days=90):
         print(f"   ⚠️ CoinGecko error {coin_id}: {e}")
         return None
 
-# ============================================================
-# FUNCIÓN PRINCIPAL DE DESCARGA CON FAILOVER
-# ============================================================
 def fetch_klines(symbol, timeframe):
-    """
-    Intenta obtener datos en este orden:
-    1. KuCoin (formato BTC-USDT)
-    2. Crypto.com (formato BTC_USDT)
-    3. CoinGecko (si symbol es un ID tipo 'bitcoin')
-    """
     key = f"{symbol}_{timeframe}"
     if key in DATA_CACHE:
         return DATA_CACHE[key]
 
     df = None
 
-    # Convertir símbolo a formatos necesarios
     if '_' in symbol:
-        # Crypto.com style: BTC_USDT
         kucoin_sym = symbol.replace('_', '-')
         cryptocom_sym = symbol
     else:
-        # Asumimos que es un ID de CoinGecko (bitcoin) o símbolo simple (BTC)
-        # Para KuCoin y Crypto.com necesitamos el par con USDT
         base = symbol
         kucoin_sym = f"{base}-USDT"
         cryptocom_sym = f"{base}_USDT"
@@ -172,24 +146,13 @@ def fetch_klines(symbol, timeframe):
         DATA_CACHE[key] = df
         return df
 
-    # 3. CoinGecko (solo si el símbolo es un ID conocido)
-    # Mapeo de símbolos cortos a IDs de CoinGecko
+    # 3. CoinGecko
     coingecko_ids = {
-        'BTC': 'bitcoin',
-        'ETH': 'ethereum',
-        'SOL': 'solana',
-        'BNB': 'binancecoin',
-        'DOGE': 'dogecoin',
-        'ADA': 'cardano',
-        'DOT': 'polkadot',
-        'LINK': 'chainlink',
-        'MATIC': 'matic-network',
-        'AVAX': 'avalanche-2',
-        'UNI': 'uniswap',
-        'ATOM': 'cosmos',
-        'XRP': 'ripple',
-        'LTC': 'litecoin',
-        'BCH': 'bitcoin-cash',
+        'BTC': 'bitcoin', 'ETH': 'ethereum', 'SOL': 'solana',
+        'BNB': 'binancecoin', 'DOGE': 'dogecoin', 'ADA': 'cardano',
+        'DOT': 'polkadot', 'LINK': 'chainlink', 'MATIC': 'matic-network',
+        'AVAX': 'avalanche-2', 'UNI': 'uniswap', 'ATOM': 'cosmos',
+        'XRP': 'ripple', 'LTC': 'litecoin', 'BCH': 'bitcoin-cash'
     }
     if symbol in coingecko_ids:
         df = fetch_klines_coingecko(coingecko_ids[symbol], timeframe)
@@ -213,11 +176,15 @@ def tension_235(series):
     return (ema2 - ema3).abs() + (ema3 - ema5).abs()
 
 # ============================================================
-# EDGE Y HITRATE PARA UN HORIZONTE k
+# EDGE PORCENTUAL Y HITRATE
 # ============================================================
-def compute_edge(price, tension, k, quantile=0.85):
+def compute_edge_pct(price, tension, k, quantile=0.85):
+    """
+    Retorna edge porcentual y hitrate para puntos con tensión > cuantil.
+    edge = (precio futuro - precio actual) / precio actual
+    """
     mask = tension > tension.quantile(quantile)
-    future_ret = price.shift(-k) - price
+    future_ret = (price.shift(-k) - price) / price
     edge = future_ret[mask].mean()
     hitrate = (future_ret[mask] > 0).mean()
     return edge, hitrate
@@ -225,23 +192,24 @@ def compute_edge(price, tension, k, quantile=0.85):
 # ============================================================
 # TIEMPO MEDIO HASTA ALCANZAR EL TARGET (TAU)
 # ============================================================
-def time_to_target(price, idx, target, max_lookahead=50):
+def time_to_target(price, idx, target_pct, max_lookahead=50):
     base = price.iloc[idx]
+    target_price = base * (1 + target_pct) if target_pct > 0 else base * (1 + target_pct)  # target_pct negativo
     for i in range(1, max_lookahead):
         if idx + i >= len(price):
             break
-        move = price.iloc[idx + i] - base
-        if target > 0 and move >= target:
+        current = price.iloc[idx + i]
+        if target_pct > 0 and current >= target_price:
             return i
-        if target < 0 and move <= target:
+        if target_pct < 0 and current <= target_price:
             return i
     return np.nan
 
-def compute_tau(price, mask, target, max_lookahead=50):
+def compute_tau(price, mask, target_pct, max_lookahead=50):
     idxs = np.where(mask)[0]
     tau_list = []
     for idx in idxs:
-        tau = time_to_target(price, idx, target, max_lookahead)
+        tau = time_to_target(price, idx, target_pct, max_lookahead)
         if not np.isnan(tau):
             tau_list.append(tau)
     return np.nanmean(tau_list) if tau_list else np.nan
@@ -259,7 +227,7 @@ def compute_corr(pidelta1, pidelta2):
     return pidelta1.corr(pidelta2) if len(pidelta1) > 1 else 0
 
 # ============================================================
-# BACKTEST INDIVIDUAL PARA UN SÍMBOLO Y TIMEFRAME
+# ANÁLISIS INDIVIDUAL POR SÍMBOLO Y TIMEFRAME
 # ============================================================
 def analyze_symbol_tf(symbol, tf, display_symbol=None):
     df = fetch_klines(symbol, tf)
@@ -278,38 +246,41 @@ def analyze_symbol_tf(symbol, tf, display_symbol=None):
     best_result = None
 
     for k in k_values:
-        edge, hitrate = compute_edge(price, T, k, quantile=0.85)
+        edge_pct, hitrate = compute_edge_pct(price, T, k, quantile=0.85)
 
         # Monte Carlo para Z-score
         mc_edges = []
-        for _ in range(30):  # reducido para velocidad
+        for _ in range(30):
             perm = np.random.permutation(S.values)
             T_mc = tension_235(pd.Series(perm, index=S.index))
-            mc_e, _ = compute_edge(price, T_mc, k)
+            mc_e, _ = compute_edge_pct(price, T_mc, k)
             mc_edges.append(mc_e)
         mc_mean = np.nanmean(mc_edges)
         mc_std = np.nanstd(mc_edges)
-        Z = (edge - mc_mean) / (mc_std + 1e-9)
+        Z = (edge_pct - mc_mean) / (mc_std + 1e-9)
 
         mask = T > T.quantile(0.85)
-        tau = compute_tau(price, mask, edge, max_lookahead=50)
+        tau = compute_tau(price, mask, edge_pct, max_lookahead=50)
 
         if np.isnan(tau) or tau == 0:
             continue
 
-        score = abs(Z) * abs(edge) / (tau + 1e-9)
+        # Score = |Z| * |edge_pct| / tau
+        score = abs(Z) * abs(edge_pct) / (tau + 1e-9)
 
         if score > best_score:
             best_score = score
             best_result = {
                 'Symbol': display_symbol if display_symbol else symbol,
                 'TF': tf,
+                'Categoria': CATEGORY_MAP.get(tf, 'Otro'),
                 'k': k,
-                'Edge': edge,
+                'Edge_%': edge_pct,
                 'HitRate': hitrate,
                 'Z': Z,
                 'Tau': tau,
                 'Score': score,
+                'Precio_actual': price.iloc[-1],
                 'TP_est': price.iloc[-1] * (1 + TP_PCT),
                 'SL_est': price.iloc[-1] * (1 - SL_PCT),
                 'PIDelta_mean': pidelta.mean(),
@@ -321,9 +292,9 @@ def analyze_symbol_tf(symbol, tf, display_symbol=None):
     return best_result, pidelta
 
 # ============================================================
-# ESCANEO COMPLETO
+# ESCANEO POR TIMEFRAME
 # ============================================================
-def scan_all(timeframe):
+def scan_timeframe(tf):
     if not os.path.exists(ASSETS_FILE):
         print(f"⚠️ Archivo {ASSETS_FILE} no encontrado. Usando lista por defecto.")
         assets = ['BTC', 'ETH', 'SOL', 'BNB', 'DOGE']
@@ -338,21 +309,20 @@ def scan_all(timeframe):
     # Obtener PIDelta de activos base para correlación
     base_pideltas = {}
     for base in BASE_SYMBOLS:
-        _, pid = analyze_symbol_tf(base, timeframe, display_symbol=base)
+        _, pid = analyze_symbol_tf(base, tf, display_symbol=base)
         if pid is not None:
             base_pideltas[base] = pid
 
     for asset in assets:
-        print(f"🔍 Analizando {asset} {timeframe}...")
+        print(f"🔍 Analizando {asset} {tf}...")
         sys.stdout.flush()
 
-        result, pid = analyze_symbol_tf(asset, timeframe, display_symbol=asset)
+        result, pid = analyze_symbol_tf(asset, tf, display_symbol=asset)
 
         if result:
             # Calcular correlaciones con activos base
             for base in BASE_SYMBOLS:
                 if base in base_pideltas and pid is not None:
-                    # Alinear índices (puede haber diferencias, usamos intersección)
                     common_idx = pid.index.intersection(base_pideltas[base].index)
                     if len(common_idx) > 10:
                         corr = compute_corr(pid.loc[common_idx], base_pideltas[base].loc[common_idx])
@@ -363,42 +333,20 @@ def scan_all(timeframe):
                     result[f'Corr_{base}'] = np.nan
 
             results.append(result)
-            print(f"   ✅ {asset} {timeframe} | Edge: {result['Edge']:.4f} | HitRate: {result['HitRate']:.2%} | Score: {result['Score']:.4f} | Corr BTC: {result.get('Corr_BTC', 0):.2f}")
+            print(f"   ✅ {asset} {tf} | Edge: {result['Edge_%']:.4%} | HitRate: {result['HitRate']:.2%} | Score: {result['Score']:.4f} | Corr BTC: {result.get('Corr_BTC', 0):.2f}")
         else:
-            print(f"   ⚠️ {asset} {timeframe}: no se obtuvieron suficientes datos")
+            print(f"   ⚠️ {asset} {tf}: no se obtuvieron suficientes datos")
 
         time.sleep(0.2)
 
     df_results = pd.DataFrame(results)
-    if df_results.empty:
-        print("❌ No se generaron resultados.")
-        return df_results
-
-    df_results = df_results.sort_values('Score', ascending=False)
-    df_results.to_csv("escaneo_filtrado.txt", index=False, sep='\t')
-    print(f"✅ Escaneo completado. {len(df_results)} registros guardados.")
-
-    print("\n=== TOP 10 LONG (mayor Score) ===")
-    top_long = df_results[df_results['Edge'] > 0].head(10)
-    if not top_long.empty:
-        print(top_long[['Symbol', 'TF', 'Edge', 'HitRate', 'Score', 'Corr_BTC']].to_string())
+    if not df_results.empty:
+        df_results = df_results.sort_values('Score', ascending=False)
+        # Guardar archivo de este timeframe (opcional)
+        df_results.to_csv(f"escaneo_{tf}.txt", index=False, sep='\t')
+        print(f"✅ {len(df_results)} registros guardados para {tf}.")
     else:
-        print("No hay señales LONG.")
-
-    print("\n=== TOP 10 SHORT (menor Edge) ===")
-    top_short = df_results[df_results['Edge'] < 0].sort_values('Edge').head(10)
-    if not top_short.empty:
-        print(top_short[['Symbol', 'TF', 'Edge', 'HitRate', 'Score', 'Corr_BTC']].to_string())
-    else:
-        print("No hay señales SHORT.")
-
-    df_results['MaxCorr'] = df_results[[f'Corr_{b}' for b in BASE_SYMBOLS if f'Corr_{b}' in df_results.columns]].max(axis=1)
-    safe_signals = df_results[df_results['MaxCorr'] < 0.85].sort_values('Score', ascending=False).head(3)
-    print("\n=== TOP 3 SEÑALES MÁS SEGURAS (baja correlación con base) ===")
-    if not safe_signals.empty:
-        print(safe_signals[['Symbol', 'TF', 'Edge', 'HitRate', 'Score', 'MaxCorr']].to_string())
-    else:
-        print("No hay señales seguras.")
+        print(f"❌ No se generaron resultados para {tf}.")
 
     return df_results
 
@@ -406,23 +354,33 @@ def scan_all(timeframe):
 # MAIN
 # ============================================================
 if __name__ == "__main__":
-    print("🚀 SISTEMA DE ESCANEO MULTI-EXCHANGE (KuCoin, Crypto.com, CoinGecko)")
-    print("=" * 60)
+    print("=" * 70)
+    print("🚀  SISTEMA DE ESCANEO MULTI-EXCHANGE (KuCoin + Crypto.com + CoinGecko)")
+    print("📊  Análisis por retorno porcentual futuro | Clasificación Scalp/Intraday/Swing")
+    print("=" * 70)
+    sys.stdout.flush()
+
     all_results = []
     for tf in TIMEFRAMES:
-        print(f"\n⏰ Timeframe: {tf}")
-        df = scan_all(tf)
-        if not df.empty:
-            all_results.append(df)
+        print(f"\n⏰ Timeframe: {tf} ({CATEGORY_MAP.get(tf, 'Otro')})")
+        df_tf = scan_timeframe(tf)
+        if not df_tf.empty:
+            all_results.append(df_tf)
+
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        combined.to_csv("escaneo_filtrado_completo.txt", index=False, sep='\t')
-        print("\n✅ Archivo combinado: 'escaneo_filtrado_completo.txt'")
+        # Reordenar columnas para mejor lectura
+        cols = ['Symbol', 'TF', 'Categoria', 'k', 'Edge_%', 'HitRate', 'Z', 'Tau', 'Score',
+                'Precio_actual', 'TP_est', 'SL_est', 'PIDelta_mean', 'PIDelta_std',
+                'Volume_mean', 'Volume_std', 'Corr_BTC', 'Corr_ETH', 'Corr_SOL']
+        combined = combined[[c for c in cols if c in combined.columns]]
+        combined.to_csv("escaneo_completo.txt", index=False, sep='\t')
+        print("\n✅ Archivo combinado generado: 'escaneo_completo.txt'")
     else:
-        # Asegurar que al menos exista un archivo vacío para el artifact
-        pd.DataFrame(columns=['Symbol','TF','Edge','HitRate','Z','Tau','Score','TP_est','SL_est',
-                              'PIDelta_mean','PIDelta_std','Volume_mean','Volume_std',
-                              'Corr_BTC','Corr_ETH','Corr_SOL','MaxCorr'])\
-          .to_csv("escaneo_filtrado.txt", index=False, sep='\t')
+        # Crear archivo vacío para que el artifact no falle
+        pd.DataFrame(columns=['Symbol','TF','Categoria','Edge_%','HitRate','Z','Tau','Score',
+                              'Precio_actual','TP_est','SL_est','Corr_BTC','Corr_ETH','Corr_SOL'])\
+          .to_csv("escaneo_completo.txt", index=False, sep='\t')
         print("⚠️ No se generaron datos. Archivo vacío creado.")
+
     print("\n✅ Proceso completado.")
