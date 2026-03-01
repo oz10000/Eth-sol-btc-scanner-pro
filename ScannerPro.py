@@ -20,11 +20,11 @@ DATA_CACHE = {}
 ATR_CACHE = {}
 PIDELTA_CACHE = {}
 
-# Parámetros del escáner
-TENSION_QUANTILE_SCAN = 0.85
+# Parámetros del escáner (ajustados para generar señales)
+TENSION_QUANTILE_SCAN = 0.5          # Reducido de 0.85 para capturar más puntos
 MIN_WINRATE = 0.55
 SCAN_K_VALUES = [3, 5, 8, 13]
-MIN_FUTURE_VELAS = 50
+MIN_FUTURE_VELAS = 20                 # Reducido de 50 para requerir menos velas hacia adelante
 
 # Grid de optimización
 PARAM_GRID = {
@@ -59,9 +59,11 @@ def fetch_klines(symbol, interval, days=LOOKBACK_DAYS):
         df.set_index("open_time", inplace=True)
         df = df[["open","high","low","close","volume"]]
         DATA_CACHE[key] = df
+        print(f"   📥 {symbol} {interval}: {len(df)} velas descargadas")
+        sys.stdout.flush()
         return df
     except Exception as e:
-        print(f"Error descargando {symbol} {interval}: {e}")
+        print(f"   ❌ Error descargando {symbol} {interval}: {e}")
         sys.stdout.flush()
         return None
 
@@ -105,11 +107,14 @@ def tension_235(series):
 def scan_symbol_tf(symbol, tf):
     df = fetch_klines(symbol, tf, days=SCAN_LOOKBACK)
     if df is None or len(df) < 100:
+        print(f"   ⚠️ {symbol} {tf}: datos insuficientes ({len(df) if df is not None else 0} velas)")
         return []
     price = df['close']
     tension = tension_235(price)
     threshold = tension.quantile(TENSION_QUANTILE_SCAN)
     high_tension_points = tension[tension >= threshold].index
+    print(f"   📊 {symbol} {tf}: umbral tensión={threshold:.6f}, puntos alta tensión={len(high_tension_points)}")
+    sys.stdout.flush()
 
     signals = []
     for dt in high_tension_points:
@@ -135,6 +140,8 @@ def scan_symbol_tf(symbol, tf):
                     'tension': tension.loc[dt], 'edge': -future_ret / price.iloc[idx],
                     'winrate': 1.0, 'k': k, 'score': -future_ret
                 })
+    print(f"   ✅ {symbol} {tf}: {len(signals)} señales generadas")
+    sys.stdout.flush()
     return signals
 
 def run_scanner():
