@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import time
 from itertools import product
 import warnings
+import sys
 warnings.filterwarnings('ignore')
 
 # ============================================================
@@ -61,6 +62,7 @@ def fetch_klines(symbol, interval, days=LOOKBACK_DAYS):
         return df
     except Exception as e:
         print(f"Error descargando {symbol} {interval}: {e}")
+        sys.stdout.flush()
         return None
 
 def get_atr(symbol, tf, window):
@@ -140,15 +142,20 @@ def run_scanner():
     for sym in SYMBOLS:
         for tf in TIMEFRAMES:
             print(f"🔍 Escaneando {sym} {tf}...")
+            sys.stdout.flush()
             sigs = scan_symbol_tf(sym, tf)
             all_signals.extend(sigs)
     df_signals = pd.DataFrame(all_signals)
+    # Siempre guardar archivo, aunque esté vacío (con encabezados)
     if len(df_signals) > 0:
         df_signals = df_signals.sort_values('score', ascending=False)
         df_signals.to_csv("escaneo_filtrado.txt", index=False, sep='\t')
         print(f"✅ Escáner completado. {len(df_signals)} señales guardadas en 'escaneo_filtrado.txt'.")
     else:
-        print("⚠️ No se generaron señales.")
+        print("⚠️ No se generaron señales. Creando archivo vacío con encabezados.")
+        pd.DataFrame(columns=['Symbol','TF','open_time','Direction','tension','edge','winrate','k','score'])\
+          .to_csv("escaneo_filtrado.txt", index=False, sep='\t')
+    sys.stdout.flush()
     return df_signals
 
 # ============================================================
@@ -261,7 +268,11 @@ def get_daily_correlation(symbols):
 # ============================================================
 def optimize_parameters(signals_df):
     if signals_df.empty:
+        print("⚠️ No hay señales para optimizar. Creando archivo vacío.")
+        pd.DataFrame(columns=list(PARAM_GRID.keys())+['num_trades','total_return','sharpe','max_drawdown','z_score','score'])\
+          .to_csv("optimization_results.txt", index=False, sep='\t')
         return None
+
     time_col = 'open_time' if 'open_time' in signals_df.columns else signals_df.columns[0]
     signals_df[time_col] = pd.to_datetime(signals_df[time_col])
     if 'tension' not in signals_df.columns:
@@ -269,6 +280,7 @@ def optimize_parameters(signals_df):
 
     daily_corr = get_daily_correlation(SYMBOLS)
     print(f"📊 Correlación media diaria entre activos: {daily_corr:.3f}")
+    sys.stdout.flush()
 
     results = []
     param_names = list(PARAM_GRID.keys())
@@ -276,6 +288,7 @@ def optimize_parameters(signals_df):
     combinations = list(product(*param_values))
     total = len(combinations)
     print(f"🔍 Evaluando {total} combinaciones...")
+    sys.stdout.flush()
 
     for idx, combo in enumerate(combinations):
         params = dict(zip(param_names, combo))
@@ -317,6 +330,7 @@ def optimize_parameters(signals_df):
         n_trades = len(trades)
         if idx % 100 == 0:
             print(f"   Progreso: {idx}/{total} - Última: {params} -> trades={n_trades}")
+            sys.stdout.flush()
         if n_trades < 3:
             continue
 
@@ -327,18 +341,24 @@ def optimize_parameters(signals_df):
         results.append({**params, 'num_trades': n_trades, 'total_return': total_ret,
                         'sharpe': sharpe, 'max_drawdown': mdd, 'z_score': z, 'score': score})
         print(f"   ✅ {params} -> score={score:.4f} (trades={n_trades})")
+        sys.stdout.flush()
 
+    # Siempre guardar archivo, aunque esté vacío
     if not results:
-        print("❌ No se encontraron combinaciones válidas.")
+        print("❌ No se encontraron combinaciones válidas. Creando archivo vacío.")
+        pd.DataFrame(columns=list(PARAM_GRID.keys())+['num_trades','total_return','sharpe','max_drawdown','z_score','score'])\
+          .to_csv("optimization_results.txt", index=False, sep='\t')
         return None
 
     best = max(results, key=lambda x: x['score'])
     print("\n🏆 Mejor combinación:")
     for k, v in best.items():
         print(f"   {k}: {v}")
+    sys.stdout.flush()
     df_opt = pd.DataFrame(results)
     df_opt.to_csv("optimization_results.txt", index=False, sep='\t')
     print("✅ Optimización guardada en 'optimization_results.txt'")
+    sys.stdout.flush()
     return best
 
 # ============================================================
@@ -355,20 +375,19 @@ def analyze_top_signals(signals_df, best_params):
     print("\n📊 TOP 3 SEÑALES LONG Y TOP 3 SHORT")
     for _, sig in top_signals.iterrows():
         print(f"{sig['Symbol']} {sig['TF']} {sig['Direction']} | Score: {sig['score']:.6f} | Tensión: {sig['tension']:.4f}")
+    sys.stdout.flush()
 
 # ============================================================
 # MAIN
 # ============================================================
 if __name__ == "__main__":
     print("🚀 SISTEMA INTEGRADO: ESCÁNER + OPTIMIZACIÓN + TOP SEÑALES")
+    sys.stdout.flush()
     signals = run_scanner()
-    if signals.empty:
-        print("No se generaron señales. Saliendo.")
-        exit()
-
     best_params = optimize_parameters(signals)
-    if best_params is None:
+    if best_params is None and not signals.empty:
+        # Si no hay resultados de optimización, usamos valores por defecto solo para top señales
         best_params = {'tp_atr': 3, 'sl_atr': 2, 'atr_window': 14, 'pidelta_window': 13, 'tension_quantile': 0.8}
-
-    analyze_top_signals(signals, best_params)
+    analyze_top_signals(signals, best_params if best_params else {})
     print("\n✅ Proceso completado. Archivos: 'escaneo_filtrado.txt', 'optimization_results.txt'")
+    sys.stdout.flush()
